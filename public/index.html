@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Automated SFDC Contact/Account Creator</title>
+<style>
+  :root { --bg: #0a0a0f; --surface: #13131a; --border: #23233a; --accent: #7c5cfc; --accent-dim: #5a3fd6; --green: #22c55e; --red: #ef4444; --text: #e8e8f0; --text-dim: #8888a8; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; padding: 40px 20px; }
+  #app { max-width: 640px; width: 100%; }
+  .header { text-align: center; margin-bottom: 32px; }
+  h1 { font-size: 28px; font-weight: 800; background: linear-gradient(135deg, var(--accent), #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 10px; }
+  .subtitle { color: var(--text-dim); font-size: 15px; line-height: 1.5; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 16px; }
+  .card-title { font-weight: 700; font-size: 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+  .step { background: var(--accent); color: #fff; width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; }
+  .card-desc { color: var(--text-dim); font-size: 14px; line-height: 1.5; margin-bottom: 16px; }
+  textarea { width: 100%; min-height: 160px; background: #0d0d14; border: 1px solid var(--border); border-radius: 8px; padding: 14px; color: var(--text); font-family: inherit; font-size: 14px; resize: vertical; outline: none; transition: border-color 0.2s; }
+  textarea:focus { border-color: var(--accent); }
+  textarea::placeholder { color: #555570; }
+  .textarea-footer { margin-top: 8px; font-size: 13px; color: var(--text-dim); }
+  .textarea-footer strong { color: var(--accent); }
+  .btn { display: block; width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 16px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-dim); }
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-green { background: var(--green); color: #fff; text-decoration: none; text-align: center; display: block; padding: 14px; border-radius: 10px; font-size: 15px; font-weight: 700; margin-bottom: 12px; }
+  .btn-green:hover { opacity: 0.9; }
+  .status-panel { text-align: center; padding: 20px 0; }
+  .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .complete-icon { width: 48px; height: 48px; background: var(--green); color: #fff; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 24px; margin-bottom: 12px; }
+  .stats-row { display: flex; justify-content: center; gap: 40px; margin-bottom: 20px; }
+  .stat-num { font-size: 28px; font-weight: 800; }
+  .stat-num.green { color: var(--green); }
+  .stat-num.red { color: var(--red); }
+  .stat-label { font-size: 13px; color: var(--text-dim); }
+  .reset-link { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 14px; margin-top: 8px; }
+  .reset-link:hover { text-decoration: underline; }
+  .footer { text-align: center; color: var(--text-dim); font-size: 13px; margin-top: 24px; }
+  #toast { position: fixed; top: 20px; right: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 20px; font-size: 14px; opacity: 0; transform: translateY(-10px); transition: all 0.3s; pointer-events: none; z-index: 100; }
+  #toast.show { opacity: 1; transform: translateY(0); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast"></div>
+<script>
+const state = { screen: 'input', emails: '', sending: false, sent: 0, total: 0, errors: 0 };
+
+function parseEmails(text) {
+  return text.split(/[\n,]+/).map(e => e.trim()).filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+}
+
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.innerHTML = '<span>' + (type==='success'?'\u2713':type==='error'?'\u2717':'\u24D8') + '</span> ' + msg;
+  t.style.borderColor = type==='success'?'var(--green)':type==='error'?'var(--red)':'var(--accent)';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 4000);
+}
+
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+
+async function startSubmission(emails) {
+  state.screen = 'sending';
+  state.sending = true;
+  state.total = emails.length;
+  render();
+  try {
+    const res = await fetch('/api/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emails })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed');
+    state.sent = data.sent;
+    state.errors = data.errors || 0;
+    state.screen = 'done';
+  } catch (e) {
+    showToast(e.message, 'error');
+    state.screen = 'input';
+  }
+  state.sending = false;
+  render();
+}
+
+function reset() {
+  state.screen = 'input'; state.emails = ''; state.sent = 0; state.total = 0; state.errors = 0;
+  render();
+}
+
+function render() {
+  const p = parseEmails(state.emails);
+  document.getElementById('app').innerHTML =
+    '<div class="header"><h1>Automated SFDC Contact/Account Creator</h1><p class="subtitle">Paste email addresses below to automatically create Contacts and Accounts in Salesforce via Clay.</p></div>' +
+    (state.screen === 'input' ?
+      '<div class="card"><div class="card-title"><span class="step">1</span> Paste Email Addresses</div>' +
+      '<p class="card-desc">Paste one or more email addresses below (one per line). Each email gets sent to Clay, which creates the corresponding Contact and Account in Salesforce.</p>' +
+      '<textarea id="emailInput" placeholder="Paste email addresses here, one per line...\n\njohn@acme.com\njane@globex.com">' + esc(state.emails) + '</textarea>' +
+      '<div class="textarea-footer"><span class="email-count">' +
+        (p.length > 0 ? '<strong>' + p.length + '</strong> valid email' + (p.length !== 1 ? 's' : '') + ' detected' : 'Paste emails above') +
+      '</span></div></div>' +
+      '<button class="btn btn-primary" onclick="handleSubmit()" ' + (p.length === 0 || state.sending ? 'disabled' : '') + '>Submit to Clay' +
+        (p.length > 0 ? ' (' + p.length + ' email' + (p.length !== 1 ? 's' : '') + ')' : '') +
+      '</button>'
+    : '') +
+    (state.screen === 'sending' ?
+      '<div class="card"><div class="status-panel"><div class="spinner"></div>' +
+      '<div style="font-size:18px;font-weight:700;margin-bottom:6px;">Sending emails to Clay...</div>' +
+      '<div style="font-size:14px;color:var(--text-dim);">Each email is being added as a new row. Clay will process them automatically.</div></div></div>'
+    : '') +
+    (state.screen === 'done' ?
+      '<div class="card"><div class="status-panel"><div class="complete-icon">\u2713</div>' +
+      '<div style="font-size:18px;font-weight:700;margin-bottom:6px;">Emails sent to Clay!</div>' +
+      '<div style="font-size:14px;color:var(--text-dim);margin-bottom:20px;">' + state.sent + ' email' + (state.sent !== 1 ? 's' : '') +
+        ' added as rows in your Clay table. Clay will create the SFDC Contacts & Accounts automatically.' +
+        (state.errors > 0 ? ' (' + state.errors + ' failed)' : '') + '</div>' +
+      '<div class="stats-row"><div class="stat"><div class="stat-num green">' + state.sent + '</div><div class="stat-label">Sent</div></div>' +
+        (state.errors > 0 ? '<div class="stat"><div class="stat-num red">' + state.errors + '</div><div class="stat-label">Failed</div></div>' : '') +
+      '</div>' +
+      '<a href="https://app.clay.com/workspaces/205369/workbooks/wb_0tc7d6c4hVUsmRBXqWq/tables/t_0tc7dpam4BeyaosFRCp/views/gv_0tc7dpaX4T8Sc7mvHDy" target="_blank" class="btn-green">Open Clay Table to View Results</a>' +
+      '<button class="reset-link" onclick="reset()">Submit more emails</button></div></div>'
+    : '') +
+    '<div class="footer">Built by Richard</div>';
+
+  const ta = document.getElementById('emailInput');
+  if (ta) ta.addEventListener('input', e => { state.emails = e.target.value; render(); });
+}
+
+function handleSubmit() {
+  const e = parseEmails(state.emails);
+  if (e.length) startSubmission(e);
+}
+
+render();
+</script>
+</body>
+</html>
